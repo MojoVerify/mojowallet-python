@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mojowallet"
-version = "0.1.0"
+version = "1.0.0"
 description = "MojoWallet Python SDK — digital wallet operations, sessions, and balance management"
 authors = ["MojoWallet <support@mojowallet.com>"]
 license = "MIT"
