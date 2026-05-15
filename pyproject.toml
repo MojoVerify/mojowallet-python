@@ -1,0 +1,35 @@
+[tool.poetry]
+name = "mojowallet"
+version = "0.1.0"
+description = "MojoWallet Python SDK — digital wallet operations, sessions, and balance management"
+authors = ["MojoWallet <support@mojowallet.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://mojoverify.com"
+repository = "https://github.com/mojowallet/mojowallet-python"
+keywords = ["wallet", "digital-wallet", "fintech", "payments", "ledger"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial",
+]
+packages = [{ include = "mojowallet" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+requests = ">=2.28"
+pyobjict = ">=2.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0"
+python-dotenv = ">=1.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires MOJOWALLET_API_KEY"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
