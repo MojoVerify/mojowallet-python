@@ -1,6 +1,3 @@
-from . import _client
-
-
 class Session:
     """
     Wallet session for concurrency control.
@@ -47,7 +44,7 @@ class Session:
 
     def extend(self, duration):
         """Extend the session expiry by `duration` seconds."""
-        return _client.post(
+        return self._wallet._client.post(
             f"session/{self.id}",
             payload={"extend": {"duration": duration}},
         )
@@ -55,7 +52,7 @@ class Session:
     def close(self):
         """Close the session. Idempotent — safe to call multiple times."""
         if not self._closed:
-            result = _client.post(
+            result = self._wallet._client.post(
                 f"session/{self.id}",
                 payload={"close": True},
             )

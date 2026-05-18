@@ -1,4 +1,3 @@
-from . import _client
 from .session import Session
 
 
@@ -6,14 +5,16 @@ class Wallet:
     """
     OO wrapper for a MojoWallet wallet instance.
 
-    All wallet operations are methods on this object. Get a wallet with::
+    Construct via ``client.Wallet.get(...)`` rather than directly::
 
-        wallet = mojowallet.Wallet.get(42)
+        client = mojowallet.Client(api_key="...")
+        wallet = client.Wallet.get(42)
         wallet.add_funds(1000, "SC_REAL", source="CREDIT_CARD")
     """
 
-    def __init__(self, data):
+    def __init__(self, data, client):
         self._data = data
+        self._client = client
         self.id = data.id
 
     def __repr__(self):
@@ -27,45 +28,35 @@ class Wallet:
         except (KeyError, TypeError):
             raise AttributeError(f"Wallet has no attribute {name!r}")
 
-    # ── CRUD / Retrieval ───────────────────────────────────────
-
-    @classmethod
-    def get(cls, id):
-        """Get a wallet by integer ID."""
-        data = _client.get(f"wallet/{id}")
-        return cls(data)
-
-    @classmethod
-    def get_by_customer(cls, customer_uuid):
-        """Get a wallet by customer UUID (e.g. 'cust-abc123')."""
-        data = _client.get(f"wallet/{customer_uuid}")
-        return cls(data)
-
-    @classmethod
-    def list(cls, **filters):
-        """List wallets with optional filtering."""
-        data = _client.get("wallet", params=filters)
-        return [cls(w) for w in data] if isinstance(data, list) else data
-
     def refresh(self):
         """Reload wallet data from the server."""
-        data = _client.get(f"wallet/{self.id}")
-        self.__init__(data)
+        data = self._client.get(f"wallet/{self.id}")
+        self._data = data
+        self.id = data.id
         return self
 
     # ── Internal Helpers ───────────────────────────────────────
 
     def _action(self, action_name, **params):
         """POST to wallet/action/<pk> (mutations)."""
-        return _client.post(f"wallet/action/{self.id}", payload={"action": action_name, **params})
+        return self._client.post(
+            f"wallet/action/{self.id}",
+            payload={"action": action_name, **params},
+        )
 
     def _query(self, query_name, **params):
         """GET from wallet/query/<pk> (reads)."""
-        return _client.get(f"wallet/query/{self.id}", params={"q": query_name, **params})
+        return self._client.get(
+            f"wallet/query/{self.id}",
+            params={"q": query_name, **params},
+        )
 
     def _save_action(self, action_name, params=None):
         """POST to wallet/<pk> with POST_SAVE_ACTIONS key."""
-        return _client.post(f"wallet/{self.id}", payload={action_name: params or True})
+        return self._client.post(
+            f"wallet/{self.id}",
+            payload={action_name: params or True},
+        )
 
     # ── Funds ──────────────────────────────────────────────────
 
@@ -227,12 +218,34 @@ class Wallet:
         """Get a gauge metric value."""
         return self._query("gauge", key=key, **kwargs)
 
-    # ── Batch (class methods) ──────────────────────────────────
 
-    @classmethod
-    def batch_balances(cls, wallet_ids, currency_code=None):
+class WalletNamespace:
+    """Reached via ``client.Wallet`` — entry point for wallet retrieval and
+    batch operations. Constructs ``Wallet`` instances bound to ``client``."""
+
+    def __init__(self, client):
+        self._client = client
+
+    def get(self, id):
+        """Get a wallet by integer ID."""
+        data = self._client.get(f"wallet/{id}")
+        return Wallet(data, self._client)
+
+    def get_by_customer(self, customer_uuid):
+        """Get a wallet by customer UUID (e.g. 'cust-abc123')."""
+        data = self._client.get(f"wallet/{customer_uuid}")
+        return Wallet(data, self._client)
+
+    def list(self, **filters):
+        """List wallets with optional filtering."""
+        data = self._client.get("wallet", params=filters)
+        if isinstance(data, list):
+            return [Wallet(w, self._client) for w in data]
+        return data
+
+    def batch_balances(self, wallet_ids, currency_code=None):
         """Get balances for multiple wallets at once."""
         payload = {"action": "batch_balances", "wallet_ids": wallet_ids}
         if currency_code:
             payload["currency_code"] = currency_code
-        return _client.post("wallet/batch", payload=payload)
+        return self._client.post("wallet/batch", payload=payload)

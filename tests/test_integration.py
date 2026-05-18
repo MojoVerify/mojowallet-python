@@ -1,6 +1,6 @@
 """Integration tests — hit a live server via the SDK.
 
-Requires MOJOWALLET_API_KEY and MOJOWALLET_BASE_URL in .env.
+Requires MOJOWALLET_API_KEY and (optionally) MOJOWALLET_BASE_URL in .env.
 Skipped automatically when MOJOWALLET_API_KEY is not set.
 
 Run with:  pytest tests/test_integration.py -v -s
@@ -8,9 +8,6 @@ Run with:  pytest tests/test_integration.py -v -s
 
 import uuid
 import pytest
-
-import mojowallet
-from mojowallet import Customer, Wallet
 
 pytestmark = pytest.mark.integration
 
@@ -26,20 +23,20 @@ def _sid():
 # ── Wallet Retrieval ──────────────────────────────────────────
 
 class TestWalletRetrieval:
-    def test_list_wallets(self, configured_client):
-        result = Wallet.list()
+    def test_list_wallets(self, live_client):
+        result = live_client.Wallet.list()
         assert isinstance(result, list)
 
-    def test_get_wallet_by_id(self, configured_client, wallet):
-        fetched = Wallet.get(wallet.id)
+    def test_get_wallet_by_id(self, live_client, wallet):
+        fetched = live_client.Wallet.get(wallet.id)
         assert fetched.id == wallet.id
         assert fetched.name == wallet.name
 
-    def test_get_wallet_by_customer_uuid(self, configured_client, wallet, customer_uuid):
-        fetched = Wallet.get_by_customer(customer_uuid)
+    def test_get_wallet_by_customer_uuid(self, live_client, wallet, customer_uuid):
+        fetched = live_client.Wallet.get_by_customer(customer_uuid)
         assert fetched.id == wallet.id
 
-    def test_refresh(self, configured_client, wallet):
+    def test_refresh(self, wallet):
         wallet.refresh()
         assert wallet.id is not None
 
@@ -47,7 +44,7 @@ class TestWalletRetrieval:
 # ── Fund Operations ───────────────────────────────────────────
 
 class TestFundOperations:
-    def test_add_funds(self, configured_client, wallet):
+    def test_add_funds(self, wallet):
         result = wallet.add_funds(
             amount_units=1000,
             currency_code="SC_REAL",
@@ -57,20 +54,20 @@ class TestFundOperations:
         )
         assert result is not None
 
-    def test_balance(self, configured_client, wallet):
+    def test_balance(self, wallet):
         bal = wallet.balance("SC_REAL")
         assert isinstance(bal, (int, float))
         assert bal >= 0
 
-    def test_balance_summary(self, configured_client, wallet):
+    def test_balance_summary(self, wallet):
         summary = wallet.balance_summary()
         assert summary is not None
 
-    def test_cashable(self, configured_client, wallet):
+    def test_cashable(self, wallet):
         cashable = wallet.cashable("SC_REAL")
         assert isinstance(cashable, (int, float))
 
-    def test_transactions(self, configured_client, wallet):
+    def test_transactions(self, wallet):
         txns = wallet.transactions(currency_code="SC_REAL", limit=5)
         assert txns is not None
 
@@ -78,7 +75,7 @@ class TestFundOperations:
 # ── Withdraw / Cashout ────────────────────────────────────────
 
 class TestWithdrawals:
-    def test_withdraw_in_session(self, configured_client, funded_wallet):
+    def test_withdraw_in_session(self, funded_wallet):
         wallet = funded_wallet
         session = wallet.start_session(_sid(), expires_in_seconds=3600)
         try:
@@ -91,7 +88,7 @@ class TestWithdrawals:
         finally:
             session.close()
 
-    def test_cashout(self, configured_client, funded_wallet):
+    def test_cashout(self, funded_wallet):
         result = funded_wallet.cashout(
             amount_units=50,
             currency_code="SC_REAL",
@@ -103,13 +100,13 @@ class TestWithdrawals:
 # ── Reserve Flow ──────────────────────────────────────────────
 
 class TestReserveFlow:
-    def test_reserve_and_release(self, configured_client, funded_wallet):
+    def test_reserve_and_release(self, funded_wallet):
         ref = _ref("reserve")
         funded_wallet.reserve(500, "SC_REAL", "SC_HOLD", ref)
         result = funded_wallet.release_reservation(ref)
         assert result is not None
 
-    def test_reserve_and_confirm(self, configured_client, funded_wallet):
+    def test_reserve_and_confirm(self, funded_wallet):
         ref = _ref("reserve")
         funded_wallet.reserve(300, "SC_REAL", "SC_HOLD", ref)
         result = funded_wallet.confirm_reservation(ref)
@@ -119,16 +116,16 @@ class TestReserveFlow:
 # ── Sessions ──────────────────────────────────────────────────
 
 class TestSessions:
-    def test_start_and_close(self, configured_client, wallet):
+    def test_start_and_close(self, wallet):
         session = wallet.start_session(_sid(), expires_in_seconds=60)
         assert session.session_id is not None
         session.close()
 
-    def test_context_manager(self, configured_client, wallet):
+    def test_context_manager(self, wallet):
         with wallet.session(_sid(), expires_in_seconds=60) as s:
             assert s.session_id is not None
 
-    def test_extend_session(self, configured_client, wallet):
+    def test_extend_session(self, wallet):
         session = wallet.start_session(_sid(), expires_in_seconds=60)
         result = session.extend(1800)
         assert result is not None
@@ -138,7 +135,7 @@ class TestSessions:
 # ── Lock / Unlock ─────────────────────────────────────────────
 
 class TestLockUnlock:
-    def test_lock_and_unlock(self, configured_client, wallet):
+    def test_lock_and_unlock(self, wallet):
         wallet.lock(reason="integration test")
         wallet.refresh()
         assert wallet.is_locked is True
@@ -151,23 +148,19 @@ class TestLockUnlock:
 # ── Full Lifecycle ────────────────────────────────────────────
 
 class TestLifecycle:
-    def test_deposit_play_cashout(self, configured_client, wallet):
+    def test_deposit_play_cashout(self, wallet):
         """Full lifecycle: deposit → check balance → session → withdraw → close → balance."""
-        # 1. Deposit
         wallet.add_funds(5000, "SC_REAL", source="CREDIT_CARD",
                          category="deposited", reference_id=_ref("lifecycle"))
 
-        # 2. Check balance
         bal_before = wallet.balance("SC_REAL")
         assert bal_before >= 5000
 
-        # 3. Start session, withdraw
         sid = _sid()
         session = wallet.start_session(sid, expires_in_seconds=3600)
         session.withdraw(2000, "SC_REAL", reference_id=_ref("play"))
         session.close()
 
-        # 4. Check balance decreased
         bal_after = wallet.balance("SC_REAL")
         assert bal_after == bal_before - 2000
 
@@ -181,17 +174,17 @@ class TestCustomerCRUD:
         assert customer.last_name == "Doe"
         assert customer.uuid is not None
 
-    def test_get_customer_by_id(self, customer):
-        fetched = Customer.get(customer.id)
+    def test_get_customer_by_id(self, live_client, customer):
+        fetched = live_client.Customer.get(customer.id)
         assert fetched.id == customer.id
         assert fetched.first_name == "John"
 
-    def test_get_customer_by_uuid(self, customer):
-        fetched = Customer.get(customer.uuid)
+    def test_get_customer_by_uuid(self, live_client, customer):
+        fetched = live_client.Customer.get(customer.uuid)
         assert fetched.uuid == customer.uuid
 
-    def test_list_customers(self, configured_client):
-        result = Customer.list()
+    def test_list_customers(self, live_client):
+        result = live_client.Customer.list()
         assert isinstance(result, list)
 
     def test_update_customer(self, customer):

@@ -1,21 +1,11 @@
-"""Unit tests for Session class — mocked, no API key needed."""
+"""Unit tests for Session class — fake-mode Client, no network."""
 
-from unittest.mock import patch, MagicMock, call
 import pytest
 from objict import objict
 
+import mojowallet
 from mojowallet.wallet import Wallet
 from mojowallet.session import Session
-from mojowallet import _client
-
-
-@pytest.fixture(autouse=True)
-def reset_state():
-    original = dict(_client._state)
-    _client._state["api_key"] = "test-key"
-    _client._state["base_url"] = "https://api.example.com"
-    yield
-    _client._state.update(original)
 
 
 def _wallet_data():
@@ -27,109 +17,141 @@ def _session_data():
     return objict(id=10, uuid="sess-abc123", session_id="game-xyz")
 
 
+@pytest.fixture
+def captured():
+    return []
+
+
+@pytest.fixture
+def client(captured):
+    c = mojowallet.Client(api_key="test-key", base_url="https://api.example.com", fake_mode=True)
+
+    def capture(method, url, payload):
+        captured.append({"method": method, "url": url, "payload": payload})
+        return False
+
+    c.register_fake_responder(capture, None)
+    return c
+
+
+def _respond(client, body):
+    client.register_fake_responder(
+        lambda *a: True,
+        {"status_code": 200, "body": {"status": True, "data": body}},
+    )
+
+
 class TestSessionWithdraw:
-    @patch("mojowallet._client.post")
-    def test_withdraw_sends_correct_request(self, mock_post):
-        mock_post.return_value = objict(id=1, status="COMPLETED")
-        w = Wallet(_wallet_data())
+    def test_withdraw_routes_through_wallet_client(self, client, captured):
+        _respond(client, {"id": 1, "status": "COMPLETED"})
+        w = Wallet(_wallet_data(), client)
         s = Session(_session_data(), w)
 
         s.withdraw(500, "SC_REAL", reference_id="bet-001")
 
-        mock_post.assert_called_once_with(
-            "wallet/action/42",
-            payload={"action": "withdraw", "amount_units": 500,
-                     "currency_code": "SC_REAL", "session_id": "game-xyz",
-                     "reference_id": "bet-001"},
-        )
+        assert captured[-1]["url"] == "https://api.example.com/api/wallet/wallet/action/42"
+        assert captured[-1]["payload"] == {
+            "action": "withdraw",
+            "amount_units": 500,
+            "currency_code": "SC_REAL",
+            "session_id": "game-xyz",
+            "reference_id": "bet-001",
+        }
 
 
 class TestSessionExtend:
-    @patch("mojowallet._client.post")
-    def test_extend(self, mock_post):
-        mock_post.return_value = objict(expires_at="2025-01-01T00:30:00Z")
-        w = Wallet(_wallet_data())
+    def test_extend(self, client, captured):
+        _respond(client, {"expires_at": "2025-01-01T00:30:00Z"})
+        w = Wallet(_wallet_data(), client)
         s = Session(_session_data(), w)
 
         s.extend(1800)
-        mock_post.assert_called_once_with(
-            "session/10",
-            payload={"extend": {"duration": 1800}},
-        )
+        assert captured[-1]["url"] == "https://api.example.com/api/wallet/session/10"
+        assert captured[-1]["payload"] == {"extend": {"duration": 1800}}
 
 
 class TestSessionClose:
-    @patch("mojowallet._client.post")
-    def test_close(self, mock_post):
-        mock_post.return_value = objict(is_active=False)
-        w = Wallet(_wallet_data())
+    def test_close(self, client, captured):
+        _respond(client, {"is_active": False})
+        w = Wallet(_wallet_data(), client)
         s = Session(_session_data(), w)
 
         s.close()
-        mock_post.assert_called_once_with(
-            "session/10",
-            payload={"close": True},
-        )
+        assert captured[-1]["url"] == "https://api.example.com/api/wallet/session/10"
+        assert captured[-1]["payload"] == {"close": True}
         assert s._closed is True
 
-    @patch("mojowallet._client.post")
-    def test_close_is_idempotent(self, mock_post):
-        mock_post.return_value = objict(is_active=False)
-        w = Wallet(_wallet_data())
+    def test_close_is_idempotent(self, client, captured):
+        _respond(client, {"is_active": False})
+        w = Wallet(_wallet_data(), client)
         s = Session(_session_data(), w)
 
         s.close()
         s.close()
-        assert mock_post.call_count == 1
+        close_calls = [c for c in captured if c["payload"] == {"close": True}]
+        assert len(close_calls) == 1
 
 
 class TestSessionContextManager:
-    @patch("mojowallet._client.post")
-    def test_context_manager_closes_on_exit(self, mock_post):
-        # First call: start_session, second call: close
-        mock_post.side_effect = [
-            objict(id=10, uuid="sess-abc", session_id="game-xyz"),
-            objict(is_active=False),
-        ]
+    def test_context_manager_closes_on_exit(self, client, captured):
+        client.reset_fake_responders()
+        responses = iter([
+            {"status_code": 200, "body": {"status": True, "data": {"id": 10, "uuid": "sess-abc", "session_id": "game-xyz"}}},
+            {"status_code": 200, "body": {"status": True, "data": {"is_active": False}}},
+        ])
 
-        w = Wallet(_wallet_data())
+        def capture(method, url, payload):
+            captured.append({"method": method, "url": url, "payload": payload})
+            return False
+
+        client.register_fake_responder(capture, None)
+        client.register_fake_responder(lambda *a: True, lambda: next(responses))
+
+        w = Wallet(_wallet_data(), client)
 
         with w.session("game-xyz") as s:
             assert s.session_id == "game-xyz"
 
-        assert mock_post.call_count == 2
-        # Second call should be close
-        mock_post.assert_called_with(
-            "session/10",
-            payload={"close": True},
-        )
+        # 2 POSTs total: start + close
+        post_count = len([c for c in captured if c["method"] == "POST"])
+        assert post_count == 2
+        # Last should be close
+        assert captured[-1]["payload"] == {"close": True}
 
-    @patch("mojowallet._client.post")
-    def test_context_manager_closes_on_exception(self, mock_post):
-        mock_post.side_effect = [
-            objict(id=10, uuid="sess-abc", session_id="game-xyz"),
-            objict(is_active=False),
-        ]
+    def test_context_manager_closes_on_exception(self, client, captured):
+        client.reset_fake_responders()
+        responses = iter([
+            {"status_code": 200, "body": {"status": True, "data": {"id": 10, "uuid": "sess-abc", "session_id": "game-xyz"}}},
+            {"status_code": 200, "body": {"status": True, "data": {"is_active": False}}},
+        ])
 
-        w = Wallet(_wallet_data())
+        def capture(method, url, payload):
+            captured.append({"method": method, "url": url, "payload": payload})
+            return False
+
+        client.register_fake_responder(capture, None)
+        client.register_fake_responder(lambda *a: True, lambda: next(responses))
+
+        w = Wallet(_wallet_data(), client)
 
         with pytest.raises(ValueError):
-            with w.session("game-xyz") as s:
+            with w.session("game-xyz"):
                 raise ValueError("test error")
 
-        # close should still be called (2 calls total: start + close)
-        assert mock_post.call_count == 2
+        # close should still be called (2 POSTs: start + close)
+        post_count = len([c for c in captured if c["method"] == "POST"])
+        assert post_count == 2
 
 
 class TestSessionRepr:
-    def test_repr_active(self):
-        w = Wallet(_wallet_data())
+    def test_repr_active(self, client):
+        w = Wallet(_wallet_data(), client)
         s = Session(_session_data(), w)
         assert "active" in repr(s)
         assert "game-xyz" in repr(s)
 
-    def test_repr_closed(self):
-        w = Wallet(_wallet_data())
+    def test_repr_closed(self, client):
+        w = Wallet(_wallet_data(), client)
         s = Session(_session_data(), w)
         s._closed = True
         assert "closed" in repr(s)

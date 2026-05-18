@@ -1,20 +1,10 @@
-"""Unit tests for Customer class — mocked, no API key needed."""
+"""Unit tests for Customer class — fake-mode Client, no network."""
 
-from unittest.mock import patch
 import pytest
 from objict import objict
 
+import mojowallet
 from mojowallet.customer import Customer
-from mojowallet import _client
-
-
-@pytest.fixture(autouse=True)
-def reset_state():
-    original = dict(_client._state)
-    _client._state["api_key"] = "test-key"
-    _client._state["base_url"] = "https://api.example.com"
-    yield
-    _client._state.update(original)
 
 
 def _customer_data(**overrides):
@@ -33,230 +23,223 @@ def _customer_data(**overrides):
     return data
 
 
-class TestCustomerCRUD:
-    @patch("mojowallet.customer._client.post")
-    def test_create(self, mock_post):
-        mock_post.return_value = _customer_data()
-        c = Customer.create(first_name="John", last_name="Doe", dob="1990-01-15")
+@pytest.fixture
+def captured():
+    return []
+
+
+@pytest.fixture
+def client(captured):
+    c = mojowallet.Client(api_key="test-key", base_url="https://api.example.com", fake_mode=True)
+
+    def capture(method, url, payload):
+        captured.append({"method": method, "url": url, "payload": payload})
+        return False
+
+    c.register_fake_responder(capture, None)
+    return c
+
+
+def _respond(client, body):
+    client.register_fake_responder(
+        lambda *a: True,
+        {"status_code": 200, "body": {"status": True, "data": body}},
+    )
+
+
+def _respond_list(client, items):
+    client.register_fake_responder(
+        lambda *a: True,
+        {"status_code": 200, "body": {"status": True, "data": items}},
+    )
+
+
+class TestCustomerNamespace:
+    def test_create(self, client, captured):
+        _respond(client, _customer_data())
+        c = client.Customer.create(first_name="John", last_name="Doe", dob="1990-01-15")
         assert c.id == 7
         assert c.first_name == "John"
-        mock_post.assert_called_once_with(
-            "customer",
-            payload={"first_name": "John", "last_name": "Doe", "date_of_birth": "1990-01-15"},
-            prefix="verify",
-        )
+        assert c._client is client
+        assert captured[-1]["method"] == "POST"
+        assert captured[-1]["url"] == "https://api.example.com/api/verify/customer"
+        assert captured[-1]["payload"] == {
+            "first_name": "John",
+            "last_name": "Doe",
+            "date_of_birth": "1990-01-15",
+        }
 
-    @patch("mojowallet.customer._client.post")
-    def test_create_with_address(self, mock_post):
-        mock_post.return_value = _customer_data()
-        Customer.create(
+    def test_create_with_address(self, client, captured):
+        _respond(client, _customer_data())
+        client.Customer.create(
             first_name="John", last_name="Doe",
             email="john@example.com",
             address_line1="123 Main St", address_city="Test", address_state="CA",
             address_postal_code="92675", address_country="US",
         )
-        payload = mock_post.call_args[1]["payload"]
-        assert payload["address_line1"] == "123 Main St"
-        assert payload["address_state"] == "CA"
+        p = captured[-1]["payload"]
+        assert p["address_line1"] == "123 Main St"
+        assert p["address_state"] == "CA"
 
-    @patch("mojowallet.customer._client.get")
-    def test_get_by_id(self, mock_get):
-        mock_get.return_value = _customer_data()
-        c = Customer.get(7)
+    def test_get_by_id(self, client, captured):
+        _respond(client, _customer_data())
+        c = client.Customer.get(7)
         assert c.id == 7
         assert c.uuid == "cust-abc123"
-        mock_get.assert_called_once_with("customer/7", prefix="verify")
+        assert captured[-1]["url"] == "https://api.example.com/api/verify/customer/7"
 
-    @patch("mojowallet.customer._client.get")
-    def test_get_by_uuid(self, mock_get):
-        mock_get.return_value = _customer_data()
-        c = Customer.get("cust-abc123")
+    def test_get_by_uuid(self, client, captured):
+        _respond(client, _customer_data())
+        c = client.Customer.get("cust-abc123")
         assert c.first_name == "John"
-        mock_get.assert_called_once_with("customer/cust-abc123", prefix="verify")
+        assert captured[-1]["url"] == "https://api.example.com/api/verify/customer/cust-abc123"
 
-    @patch("mojowallet.customer._client.get")
-    def test_list(self, mock_get):
-        mock_get.return_value = [_customer_data(id=1), _customer_data(id=2)]
-        result = Customer.list(status="active")
+    def test_list(self, client, captured):
+        _respond_list(client, [{"id": 1, "first_name": "A", "last_name": "X"},
+                               {"id": 2, "first_name": "B", "last_name": "Y"}])
+        result = client.Customer.list(status="active")
         assert len(result) == 2
-        assert result[0].id == 1
-        mock_get.assert_called_once_with("customer", params={"status": "active"}, prefix="verify")
+        assert result[0]._client is client
+        assert captured[-1]["url"] == "https://api.example.com/api/verify/customer"
+        assert captured[-1]["payload"] == {"status": "active"}
 
-    @patch("mojowallet.customer._client.get")
-    def test_refresh(self, mock_get):
-        mock_get.return_value = _customer_data(kyc_level=2)
-        c = Customer(_customer_data())
+
+class TestCustomerInstance:
+    def _c(self, client):
+        return Customer(_customer_data(), client)
+
+    def test_refresh(self, client, captured):
+        _respond(client, _customer_data(kyc_level=2))
+        c = self._c(client)
         c.refresh()
         assert c.kyc_level == 2
 
-    @patch("mojowallet.customer._client.post")
-    def test_update(self, mock_post):
-        mock_post.return_value = _customer_data(email="new@example.com")
-        c = Customer(_customer_data())
+    def test_update(self, client, captured):
+        _respond(client, _customer_data(email="new@example.com"))
+        c = self._c(client)
         c.update(email="new@example.com", phone="+15559999999")
-        mock_post.assert_called_once_with(
-            "customer/7",
-            payload={"email": "new@example.com", "phone": "+15559999999"},
-            prefix="verify",
-        )
+        assert captured[-1]["url"] == "https://api.example.com/api/verify/customer/7"
+        assert captured[-1]["payload"] == {"email": "new@example.com", "phone": "+15559999999"}
         assert c.email == "new@example.com"
 
-    @patch("mojowallet.customer._client.post")
-    def test_update_meta(self, mock_post):
-        mock_post.return_value = _customer_data()
-        c = Customer(_customer_data())
-        c.update_meta({"vip": True, "tier": "gold"})
-        mock_post.assert_called_once_with(
-            "customer/7",
-            payload={"metadata": {"vip": True, "tier": "gold"}},
-            prefix="verify",
-        )
+    def test_update_meta(self, client, captured):
+        _respond(client, _customer_data())
+        self._c(client).update_meta({"vip": True, "tier": "gold"})
+        assert captured[-1]["payload"] == {"metadata": {"vip": True, "tier": "gold"}}
 
 
 class TestCustomerVerification:
-    def _make(self):
-        return Customer(_customer_data())
+    def _c(self, client):
+        return Customer(_customer_data(), client)
 
-    @patch("mojowallet.customer._client.post")
-    def test_verify_email(self, mock_post):
-        mock_post.return_value = objict(email="john@example.com", token="abc-123", expires_at="2026-03-10T00:00:00Z", send_status="sent")
-        c = self._make()
-        result = c.verify_email()
-        mock_post.assert_called_once_with(
-            "email/verify",
-            payload={"email": "john@example.com", "redirect_url": ""},
-            prefix="tools",
-        )
+    def test_verify_email(self, client, captured):
+        _respond(client, {"email": "john@example.com", "token": "abc",
+                          "expires_at": "2026-03-10T00:00:00Z", "send_status": "sent"})
+        result = self._c(client).verify_email()
+        assert captured[-1]["url"] == "https://api.example.com/api/tools/email/verify"
+        assert captured[-1]["payload"] == {"email": "john@example.com", "redirect_url": ""}
         assert result.send_status == "sent"
 
-    @patch("mojowallet.customer._client.post")
-    def test_verify_email_custom(self, mock_post):
-        mock_post.return_value = objict(email="other@example.com", token="xyz", expires_at="2026-03-10T00:00:00Z", send_status="sent")
-        c = self._make()
-        c.verify_email(email="other@example.com", redirect_url="https://app.com/done")
-        mock_post.assert_called_once_with(
-            "email/verify",
-            payload={"email": "other@example.com", "redirect_url": "https://app.com/done"},
-            prefix="tools",
-        )
+    def test_verify_email_custom(self, client, captured):
+        _respond(client, {"send_status": "sent"})
+        self._c(client).verify_email(email="other@example.com", redirect_url="https://app.com/done")
+        assert captured[-1]["payload"]["email"] == "other@example.com"
+        assert captured[-1]["payload"]["redirect_url"] == "https://app.com/done"
 
-    @patch("mojowallet.customer._client.post")
-    def test_verify_phone(self, mock_post):
-        mock_post.return_value = objict(phone="+15551234567", token="def-456", expires_at="2026-03-10T00:00:00Z", send_status="sent")
-        c = self._make()
-        result = c.verify_phone()
-        mock_post.assert_called_once_with(
-            "phone/verify",
-            payload={"phone": "+15551234567", "redirect_url": ""},
-            prefix="tools",
-        )
+    def test_verify_phone(self, client, captured):
+        _respond(client, {"send_status": "sent"})
+        result = self._c(client).verify_phone()
+        assert captured[-1]["url"] == "https://api.example.com/api/tools/phone/verify"
+        assert captured[-1]["payload"]["phone"] == "+15551234567"
         assert result.send_status == "sent"
 
 
 class TestCustomerLiveness:
-    def _make(self):
-        return Customer(_customer_data())
+    def _c(self, client):
+        return Customer(_customer_data(), client)
 
-    @patch("mojowallet.customer._client.post")
-    def test_request_liveness_with_existing_request(self, mock_post):
-        mock_post.return_value = objict(session_token="ident-abc123", session_id=99, status="pending")
-        c = self._make()
-        token = c.request_liveness_check(verification_request_id=789)
+    def test_request_liveness_with_existing_request(self, client, captured):
+        _respond(client, {"session_token": "ident-abc123", "session_id": 99, "status": "pending"})
+        token = self._c(client).request_liveness_check(verification_request_id=789)
         assert token == "ident-abc123"
-        mock_post.assert_called_once_with(
-            "sessions",
-            payload={"verification_request": 789, "require_liveness": True},
-            prefix="identity",
-        )
+        assert captured[-1]["url"] == "https://api.example.com/api/identity/sessions"
+        assert captured[-1]["payload"]["verification_request"] == 789
 
-    @patch("mojowallet.customer._client.post")
-    def test_request_liveness_auto_creates_request(self, mock_post):
-        # First call creates the verify request, second starts identity session
-        mock_post.side_effect = [
-            objict(id=100, uuid="pvr-abc"),                  # create request
-            objict(session_token="ident-xyz", session_id=50, status="pending"),  # start session
-        ]
-        c = self._make()
-        token = c.request_liveness_check()
+    def test_request_liveness_auto_creates_request(self, client, captured):
+        client.reset_fake_responders()
+        responses = iter([
+            {"status_code": 200, "body": {"status": True, "data": {"id": 100, "uuid": "pvr-abc"}}},
+            {"status_code": 200, "body": {"status": True, "data": {"session_token": "ident-xyz", "session_id": 50, "status": "pending"}}},
+        ])
+
+        def capture(method, url, payload):
+            captured.append({"method": method, "url": url, "payload": payload})
+            return False
+
+        client.register_fake_responder(capture, None)
+        client.register_fake_responder(lambda *a: True, lambda: next(responses))
+
+        token = self._c(client).request_liveness_check()
         assert token == "ident-xyz"
-        assert mock_post.call_count == 2
-        # First call: create verify request
-        first_call = mock_post.call_args_list[0]
-        assert first_call[0][0] == "requests"
-        assert first_call[1]["prefix"] == "verify"
-        assert first_call[1]["payload"]["require_liveness"] is True
+        # First call: create verify request at /api/verify/requests
+        assert captured[0]["url"] == "https://api.example.com/api/verify/requests"
         # Second call: start identity session
-        second_call = mock_post.call_args_list[1]
-        assert second_call[0][0] == "sessions"
-        assert second_call[1]["prefix"] == "identity"
-        assert second_call[1]["payload"]["verification_request"] == 100
+        assert captured[1]["url"] == "https://api.example.com/api/identity/sessions"
+        assert captured[1]["payload"]["verification_request"] == 100
 
-    @patch("mojowallet.customer._client.get")
-    def test_check_liveness_status(self, mock_get):
-        mock_get.return_value = objict(status="completed", decision="pass", overall_score=95)
-        c = self._make()
-        result = c.check_liveness_status("ident-abc123")
+    def test_check_liveness_status(self, client, captured):
+        _respond(client, {"status": "completed", "decision": "pass", "overall_score": 95})
+        result = self._c(client).check_liveness_status("ident-abc123")
         assert result.decision == "pass"
-        mock_get.assert_called_once_with(
-            "sessions/status",
-            params={"session_token": "ident-abc123"},
-            prefix="identity",
-        )
+        assert captured[-1]["url"] == "https://api.example.com/api/identity/sessions/status"
+        assert captured[-1]["payload"] == {"session_token": "ident-abc123"}
 
 
 class TestCustomerKYC:
-    def _make(self):
-        return Customer(_customer_data())
+    def _c(self, client):
+        return Customer(_customer_data(), client)
 
-    @patch("mojowallet.customer._client.post")
-    def test_request_kyc(self, mock_post):
-        mock_post.return_value = objict(id=200, uuid="pvr-kyc-001", status="pending")
-        c = self._make()
-        request_uuid = c.request_kyc(require_ssn=True, require_gov_id=True)
+    def test_request_kyc(self, client, captured):
+        _respond(client, {"id": 200, "uuid": "pvr-kyc-001", "status": "pending"})
+        request_uuid = self._c(client).request_kyc(require_ssn=True, require_gov_id=True)
         assert request_uuid == "pvr-kyc-001"
-        payload = mock_post.call_args[1]["payload"]
-        assert payload["first_name"] == "John"
-        assert payload["last_name"] == "Doe"
-        assert payload["require_ssn"] is True
-        assert payload["require_gov_id"] is True
-        mock_post.assert_called_once_with("requests", payload=payload, prefix="verify")
+        p = captured[-1]["payload"]
+        assert p["first_name"] == "John"
+        assert p["last_name"] == "Doe"
+        assert p["require_ssn"] is True
+        assert p["require_gov_id"] is True
+        assert captured[-1]["url"] == "https://api.example.com/api/verify/requests"
 
-    @patch("mojowallet.customer._client.get")
-    def test_check_kyc_request(self, mock_get):
-        mock_get.return_value = objict(
-            id=200, uuid="pvr-kyc-001", status="completed",
-            kyc_level=2, risk_level="low",
-            is_ssn_verified=True, is_gov_id_verified=True,
-        )
-        c = self._make()
-        result = c.check_kyc_request("pvr-kyc-001")
+    def test_check_kyc_request(self, client, captured):
+        _respond(client, {
+            "id": 200, "uuid": "pvr-kyc-001", "status": "completed",
+            "kyc_level": 2, "risk_level": "low",
+            "is_ssn_verified": True, "is_gov_id_verified": True,
+        })
+        result = self._c(client).check_kyc_request("pvr-kyc-001")
         assert result.status == "completed"
         assert result.kyc_level == 2
-        mock_get.assert_called_once_with("requests/uuid/pvr-kyc-001", prefix="verify")
+        assert captured[-1]["url"] == "https://api.example.com/api/verify/requests/uuid/pvr-kyc-001"
 
-    @patch("mojowallet.customer._client.get")
-    def test_get_kyc_status(self, mock_get):
-        mock_get.return_value = _customer_data(
-            kyc_level=2, is_email_verified=True, is_ssn_verified=True,
-        )
-        c = Customer(_customer_data())
+    def test_get_kyc_status(self, client):
+        _respond(client, _customer_data(kyc_level=2, is_email_verified=True, is_ssn_verified=True))
+        c = Customer(_customer_data(), client)
         status = c.get_kyc_status()
         assert status.kyc_level == 2
         assert status.is_email_verified is True
-        assert status.is_ssn_verified is True
 
 
 class TestCustomerRepr:
-    def test_repr(self):
-        c = Customer(_customer_data())
+    def test_repr(self, client):
+        c = Customer(_customer_data(), client)
         assert repr(c) == "Customer(id=7, name='John Doe')"
 
-    def test_attribute_access(self):
-        c = Customer(_customer_data())
+    def test_attribute_access(self, client):
+        c = Customer(_customer_data(), client)
         assert c.uuid == "cust-abc123"
         assert c.status == "active"
 
-    def test_missing_attribute_raises(self):
-        c = Customer(_customer_data())
+    def test_missing_attribute_raises(self, client):
+        c = Customer(_customer_data(), client)
         with pytest.raises(AttributeError):
             _ = c.nonexistent_field

@@ -1,34 +1,29 @@
-from . import _client
-
-
 class Customer:
     """
-    Customer KYC resource.
+    Customer KYC resource (upstream prefix: ``verify``).
 
-    Create and manage customers with identity verification::
+    Construct via ``client.Customer`` rather than directly::
 
-        customer = mojowallet.Customer.create(first_name="Bob", last_name="Jones", dob="1990-01-30")
+        client = mojowallet.Client(api_key="...")
+        customer = client.Customer.create(first_name="Bob", last_name="Jones", dob="1990-01-30")
         customer.uuid            # "cust-abc123"
         customer.update(email="bob@example.com", phone="+15551234567")
 
-        # email / phone verification
         customer.verify_email()
         customer.verify_phone()
 
-        # KYC verification
         request_uuid = customer.request_kyc(require_ssn=True, require_gov_id=True)
         status = customer.check_kyc_request(request_uuid)
 
-        # overall KYC status
         kyc = customer.get_kyc_status()
         kyc.kyc_level       # 0=unverified, 1=basic, 2=verified, 3=enhanced
-        kyc.is_email_verified
     """
 
     _PREFIX = "verify"
 
-    def __init__(self, data):
+    def __init__(self, data, client):
         self._data = data
+        self._client = client
         self.id = data.id
 
     def __repr__(self):
@@ -43,43 +38,11 @@ class Customer:
         except (KeyError, TypeError):
             raise AttributeError(f"Customer has no attribute {name!r}")
 
-    # ── CRUD ─────────────────────────────────────────────────────
-
-    @classmethod
-    def create(cls, first_name, last_name, **kwargs):
-        """
-        Create a new customer in the active API key's group.
-
-        Args:
-            first_name: Customer first name.
-            last_name: Customer last name.
-            **kwargs: Optional fields — dob, email, phone, address_line1,
-                      address_city, address_state, address_postal_code,
-                      address_country, metadata, etc.
-        """
-        payload = {"first_name": first_name, "last_name": last_name, **kwargs}
-        # Map shorthand 'dob' to backend field name
-        if "dob" in payload:
-            payload["date_of_birth"] = payload.pop("dob")
-        data = _client.post("customer", payload=payload, prefix=cls._PREFIX)
-        return cls(data)
-
-    @classmethod
-    def get(cls, id_or_uuid):
-        """Get a customer by integer ID or UUID string."""
-        data = _client.get(f"customer/{id_or_uuid}", prefix=cls._PREFIX)
-        return cls(data)
-
-    @classmethod
-    def list(cls, **filters):
-        """List customers with optional filtering."""
-        data = _client.get("customer", params=filters, prefix=cls._PREFIX)
-        return [cls(c) for c in data] if isinstance(data, list) else data
-
     def refresh(self):
         """Reload customer data from the server."""
-        data = _client.get(f"customer/{self.id}", prefix=self._PREFIX)
-        self.__init__(data)
+        data = self._client.get(f"customer/{self.id}", prefix=self._PREFIX)
+        self._data = data
+        self.id = data.id
         return self
 
     def update(self, **kwargs):
@@ -91,8 +54,9 @@ class Customer:
                       address_city, address_state, address_postal_code,
                       address_country, first_name, last_name, etc.
         """
-        data = _client.post(f"customer/{self.id}", payload=kwargs, prefix=self._PREFIX)
-        self.__init__(data)
+        data = self._client.post(f"customer/{self.id}", payload=kwargs, prefix=self._PREFIX)
+        self._data = data
+        self.id = data.id
         return self
 
     def update_meta(self, metadata):
@@ -107,7 +71,7 @@ class Customer:
 
         Returns dict with token, expires_at, send_status.
         """
-        return _client.post("email/verify", payload={
+        return self._client.post("email/verify", payload={
             "email": email or self._data.get("email"),
             "redirect_url": redirect_url,
         }, prefix="tools")
@@ -118,7 +82,7 @@ class Customer:
 
         Returns dict with token, expires_at, send_status.
         """
-        return _client.post("phone/verify", payload={
+        return self._client.post("phone/verify", payload={
             "phone": phone or self._data.get("phone"),
             "redirect_url": redirect_url,
         }, prefix="tools")
@@ -140,8 +104,7 @@ class Customer:
             Session token string.
         """
         if not verification_request_id:
-            # Create a minimal verification request for liveness only
-            req = _client.post("requests", payload={
+            req = self._client.post("requests", payload={
                 "first_name": self._data.get("first_name"),
                 "last_name": self._data.get("last_name"),
                 "email": self._data.get("email"),
@@ -157,7 +120,7 @@ class Customer:
             "require_liveness": True,
             **config,
         }
-        result = _client.post("sessions", payload=payload, prefix="identity")
+        result = self._client.post("sessions", payload=payload, prefix="identity")
         return result.session_token
 
     def check_liveness_status(self, session_token):
@@ -166,7 +129,7 @@ class Customer:
 
         Returns dict with status, decision, overall_score, etc.
         """
-        return _client.get("sessions/status",
+        return self._client.get("sessions/status",
             params={"session_token": session_token}, prefix="identity")
 
     # ── KYC Verification ─────────────────────────────────────────
@@ -174,18 +137,6 @@ class Customer:
     def request_kyc(self, **kwargs):
         """
         Create a full KYC verification request for this customer.
-
-        Args:
-            require_ssn: bool (default True)
-            require_ofac: bool (default True)
-            require_gov_id: bool (default False)
-            require_liveness: bool (default False)
-            require_email: bool (default False)
-            require_phone: bool (default False)
-            require_address: bool (default False)
-            require_adverse_media: bool (default False)
-            notification_method: "disabled", "email", "sms", "both"
-            expiration_days: int (default 7)
 
         Returns:
             UUID string of the created verification request.
@@ -197,7 +148,7 @@ class Customer:
             "phone": self._data.get("phone"),
             **kwargs,
         }
-        result = _client.post("requests", payload=payload, prefix=self._PREFIX)
+        result = self._client.post("requests", payload=payload, prefix=self._PREFIX)
         return result.uuid
 
     def check_kyc_request(self, request_uuid):
@@ -206,16 +157,48 @@ class Customer:
 
         Returns dict with status, kyc_level, risk_level, verification flags, etc.
         """
-        return _client.get(f"requests/uuid/{request_uuid}", prefix=self._PREFIX)
+        return self._client.get(f"requests/uuid/{request_uuid}", prefix=self._PREFIX)
 
     def get_kyc_status(self):
         """
         Refresh and return the customer's current KYC status.
-
-        Returns the customer data object with fields like:
-            kyc_level, risk_level, trust_level, confidence_score,
-            is_email_verified, is_phone_verified, is_ssn_verified,
-            is_gov_id_verified, is_liveness_verified, etc.
         """
         self.refresh()
         return self._data
+
+
+class CustomerNamespace:
+    """Reached via ``client.Customer`` — entry point for customer CRUD.
+    Constructs ``Customer`` instances bound to ``client``."""
+
+    _PREFIX = "verify"
+
+    def __init__(self, client):
+        self._client = client
+
+    def create(self, first_name, last_name, **kwargs):
+        """
+        Create a new customer in the client's group.
+
+        Args:
+            first_name: Customer first name.
+            last_name: Customer last name.
+            **kwargs: Optional fields — dob, email, phone, address_*, metadata, etc.
+        """
+        payload = {"first_name": first_name, "last_name": last_name, **kwargs}
+        if "dob" in payload:
+            payload["date_of_birth"] = payload.pop("dob")
+        data = self._client.post("customer", payload=payload, prefix=self._PREFIX)
+        return Customer(data, self._client)
+
+    def get(self, id_or_uuid):
+        """Get a customer by integer ID or UUID string."""
+        data = self._client.get(f"customer/{id_or_uuid}", prefix=self._PREFIX)
+        return Customer(data, self._client)
+
+    def list(self, **filters):
+        """List customers with optional filtering."""
+        data = self._client.get("customer", params=filters, prefix=self._PREFIX)
+        if isinstance(data, list):
+            return [Customer(c, self._client) for c in data]
+        return data

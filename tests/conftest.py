@@ -9,7 +9,6 @@ except ImportError:
     pass
 
 import mojowallet
-from mojowallet import _client
 
 
 # ---------------------------------------------------------------------------
@@ -20,50 +19,46 @@ def _api_key():
 
 
 def _base_url():
-    return os.environ.get("MOJOWALLET_BASE_URL", "https://api.mojoverify.com/")
+    return os.environ.get("MOJOWALLET_BASE_URL", "https://api.mojoverify.com")
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 @pytest.fixture
-def configured_client():
-    """Configure mojowallet with env-var credentials, then reset state."""
+def live_client():
+    """Construct a Client with env-var credentials for integration tests."""
     key = _api_key()
     if not key:
         pytest.skip("MOJOWALLET_API_KEY not set")
-
-    original_state = dict(_client._state)
-    mojowallet.configure(key, base_url=_base_url())
-    yield
-    _client._state.update(original_state)
+    return mojowallet.Client(api_key=key, base_url=_base_url())
 
 
 @pytest.fixture
-def customer_uuid(configured_client):
+def customer_uuid(live_client):
     """Customer UUID for integration tests.
 
-    Set MOJOWALLET_CUSTOMER_UUID in .env, or auto-discovers from first wallet.
+    Set MOJOWALLET_CUSTOMER_UUID in .env, or auto-discover from first wallet.
     """
     cid = os.environ.get("MOJOWALLET_CUSTOMER_UUID")
     if cid:
         return cid
-    wallets = mojowallet.Wallet.list(limit=1)
+    wallets = live_client.Wallet.list(limit=1)
     if wallets and isinstance(wallets, list) and len(wallets) > 0:
         return wallets[0].customer_uuid
     pytest.skip("No MOJOWALLET_CUSTOMER_UUID and no wallets on server")
 
 
 @pytest.fixture
-def wallet(configured_client, customer_uuid):
+def wallet(live_client, customer_uuid):
     """Get a wallet by customer UUID for integration tests."""
-    return mojowallet.Wallet.get_by_customer(customer_uuid)
+    return live_client.Wallet.get_by_customer(customer_uuid)
 
 
 @pytest.fixture
-def customer(configured_client):
+def customer(live_client):
     """Create or retrieve the default test customer (John Doe)."""
-    return mojowallet.Customer.create(
+    return live_client.Customer.create(
         first_name="John",
         last_name="Doe",
         dob="1990-01-15",
@@ -88,6 +83,33 @@ def funded_wallet(wallet):
         reference_id=f"fund-{uuid.uuid4().hex[:12]}",
     )
     return wallet
+
+
+# ---------------------------------------------------------------------------
+# Unit-test helpers (fake mode)
+# ---------------------------------------------------------------------------
+def fake_client(base_url="https://api.example.com", api_key="test-key"):
+    """A Client in fake mode with a capturing helper attached.
+
+    Tests register responders and inspect ``client.captured`` to assert what
+    was called. Used by all unit tests so the SDK code path is exercised
+    without ``requests`` ever being invoked.
+    """
+    client = mojowallet.Client(api_key=api_key, base_url=base_url, fake_mode=True)
+    client.captured = []
+
+    def capture_matcher(method, url, payload):
+        client.captured.append((method, url, payload))
+        return False  # let the next responder handle the actual reply
+
+    client.register_fake_responder(capture_matcher, None)
+    return client
+
+
+@pytest.fixture
+def client():
+    """A fake-mode Client for unit tests."""
+    return fake_client()
 
 
 # ---------------------------------------------------------------------------
