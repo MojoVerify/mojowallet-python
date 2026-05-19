@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mojowallet"
-version = "2.0.0"
+version = "2.0.1"
 description = "MojoVerify Python SDK — per-instance Client for wallet, KYC, identity, and comply endpoints"
 authors = ["MojoWallet <support@mojowallet.com>"]
 license = "MIT"
