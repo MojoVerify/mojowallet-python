@@ -191,6 +191,11 @@ class Wallet:
         """
         Start a session (manual lifecycle — caller must close).
 
+        This is a strict concurrency guard: it raises ``SessionConflictError``
+        if the wallet already has an active withdraw session — even one with
+        the same ``session_id``. To operate inside an already-open session
+        use ``attach_session``; to close one use ``close_session``.
+
         Usage::
 
             session = wallet.start_session("game-xyz")
@@ -199,6 +204,28 @@ class Wallet:
         """
         data = self._action("start_session", session_id=session_id, **kwargs)
         return Session(data, self)
+
+    def attach_session(self, session_id):
+        """
+        Return a Session bound to an already-open ``session_id``, with no
+        server round-trip. Use to operate inside a session a different
+        request opened (launch opens it; later bets withdraw inside it).
+
+        The handle supports ``withdraw``; ``close`` / ``extend`` are not
+        available on it (use ``close_session`` to close by id).
+        """
+        return Session.attach(self, session_id)
+
+    def close_session(self, session_id):
+        """
+        Close an active session by its external ``session_id``.
+
+        Closes by id with no Session object, so a process that did not open
+        the session (a reaper, a force-close, a webhook handler) can still
+        close it. ``start_session`` cannot be re-used for this — it is a
+        strict guard that rejects a second start while a session is active.
+        """
+        return self._action("close_session", session_id=session_id)
 
     # ── Metrics ────────────────────────────────────────────────
 
