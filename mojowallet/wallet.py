@@ -58,6 +58,22 @@ class Wallet:
             payload={action_name: params or True},
         )
 
+    # ── Generic Passthrough ────────────────────────────────────
+
+    def action(self, name, **params):
+        """Invoke any wallet action by name — POST wallet/action/<pk>.
+
+        Use for actions without a dedicated method, e.g.::
+
+            wallet.action("record_event", event_key="player.registered",
+                          idempotency_key="evt-123")
+        """
+        return self._action(name, **params)
+
+    def query(self, name, **params):
+        """Run any wallet query by name — GET wallet/query/<pk>."""
+        return self._query(name, **params)
+
     # ── Funds ──────────────────────────────────────────────────
 
     def add_funds(self, amount_units, currency_code, source, **kwargs):
