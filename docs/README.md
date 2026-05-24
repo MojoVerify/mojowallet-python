@@ -8,7 +8,7 @@
 | [Wallet Operations](wallet.md) | Full wallet API reference |
 | [Sessions](sessions.md) | Concurrency control, context managers |
 | [Error Handling](error-handling.md) | Exception hierarchy |
-| [Changelog](changelog.md) | Version history |
+| [Changelog](../CHANGELOG.md) | Version history |
 
 ## Architecture
 

@@ -97,6 +97,12 @@ except MojoWalletError as e:
 |-----------|------|-------------|
 | `retry_after` | `int` | Seconds to wait before retrying |
 
+### `IdempotentReplayError`
+
+No additional attributes. Raised when a request replays with the same
+`reference_id` but a divergent payload — typically a caller bug worth
+surfacing for investigation rather than swallowing.
+
 ### `WalletInvariantError`
 
 No additional attributes. The message is **always** the canned
