@@ -1,5 +1,10 @@
 ## v2.3.0 - May 23, 2026
 
+## v2.3.1 - May 24, 2026
+
+core changes
+
+
 Adds wallet-hardening Phase 2 support (mverify_api@a3f9a57).
 
 ### Added
