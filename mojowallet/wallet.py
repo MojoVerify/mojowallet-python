@@ -1,3 +1,4 @@
+from .exceptions import InvalidReferenceError
 from .session import Session
 
 
@@ -114,6 +115,35 @@ class Wallet:
             amount_units=amount_units, currency_code=currency_code,
             reference_id=reference_id, **kwargs)
 
+    def spend(self, amount_units, root_code, reference_id, *, merchant="", metadata=None):
+        """Spend funds from a currency family (e.g. ``"SC"``).
+
+        The server walks the family's holdings in priority order — currency
+        ``spend_priority`` ascending, then holding ``created`` ascending — and
+        debits across as many holdings as needed.
+
+        Idempotent on ``reference_id``: a replay returns the original
+        transactions instead of double-debiting. Child transactions are keyed
+        ``f"{reference_id}#{i}"`` server-side, so ``reference_id`` itself must
+        not contain ``'#'``.
+
+        Raises ``InvalidReferenceError`` (code 5006) locally if
+        ``reference_id`` is empty or contains ``'#'`` — same constraint the
+        server enforces.
+        """
+        if not reference_id:
+            raise InvalidReferenceError("reference_id is required for spend")
+        if '#' in reference_id:
+            raise InvalidReferenceError("reference_id must not contain '#'")
+        return self._action(
+            "spend",
+            amount_units=amount_units,
+            root_code=root_code,
+            reference_id=reference_id,
+            merchant=merchant,
+            metadata=metadata,
+        )
+
     def transfer(self, to_wallet_id, amount_units, currency_code, **kwargs):
         """Transfer funds to another wallet."""
         return self._action("transfer",
@@ -145,7 +175,28 @@ class Wallet:
         return result.balance if hasattr(result, 'balance') else result
 
     def balance_summary(self):
-        """Get full balance summary across all currencies."""
+        """Get full balance summary across all currency families.
+
+        Response shape (since API a3f9a57)::
+
+            {
+              "balances": {                  # KEYED BY ROOT_CODE
+                "SC": {"available": ..., "total": ..., "by_code": {...}},
+                "GC": {...},
+              },
+              "total_by_currency": {         # keyed by currency_code
+                "SC_REAL": {"quantity": ..., "formatted": ...},
+                ...
+              },
+              "cashable_by_currency": {"SC_REAL": ..., ...},
+              "is_active": bool, "is_locked": bool,
+              "is_suspended": bool, "suspended_until": iso8601|null,
+            }
+
+        BREAKING CHANGE vs 2.2.x: ``balances`` was previously keyed by
+        currency_code; it is now keyed by root_code. Per-currency rollups
+        moved to ``total_by_currency`` (which existed before and is preserved).
+        """
         return self._query("balance_summary")
 
     def cashable(self, currency_code):
@@ -157,6 +208,28 @@ class Wallet:
         """Get spending power (balance minus limits). Returns integer (units)."""
         result = self._query("spending_power", currency_code=currency_code)
         return result.spending_power if hasattr(result, 'spending_power') else result
+
+    def get_holdings(self, currency_code=None, root_code=None, include_expired=False):
+        """List per-holding balances. Filter by ``currency_code`` or
+        ``root_code``; both optional. Returns the holdings list."""
+        params = {}
+        if currency_code is not None:
+            params["currency_code"] = currency_code
+        if root_code is not None:
+            params["root_code"] = root_code
+        if include_expired:
+            params["include_expired"] = True
+        result = self._query("holdings", **params)
+        return result.holdings if hasattr(result, 'holdings') else result
+
+    def get_root_balance(self, root_code):
+        """Get aggregated balance for a currency family (e.g. ``"SC"``).
+
+        Returns a dict with ``available``, ``total``, and ``by_code`` (the
+        per-currency breakdown within the family).
+        """
+        result = self._query("root_balance", root_code=root_code)
+        return result.root_balance if hasattr(result, 'root_balance') else result
 
     def transactions(self, **kwargs):
         """Get transaction history with optional filters."""

@@ -21,6 +21,7 @@ import os
 import requests
 from objict import objict
 
+from ._errors import dispatch_wallet_error
 from .exceptions import (
     AuthError,
     InsufficientBalanceError,
@@ -168,6 +169,9 @@ class Client:
         # Envelope: {"status": true/false, "data": ...}
         if isinstance(body, dict) and "status" in body:
             if not body["status"]:
+                # Code-based dispatch wins over the generic raise so
+                # {"status": false, "code": 5002} surfaces as InsufficientBalanceError.
+                dispatch_wallet_error(body)
                 msg = body.get("error") or body.get("message") or "API error"
                 raise MojoWalletError(msg, status_code=status_code, code=body.get("code"))
             return _wrap(body.get("data", body))
@@ -183,6 +187,10 @@ class Client:
         self._raise_for_status(resp.status_code, body, resp.headers, raw_text=resp.text)
 
     def _raise_for_status(self, status_code, body, headers, raw_text=""):
+        # Code-based dispatch runs first so a 500 with code=5001 surfaces as
+        # WalletInvariantError (not generic) and a 423 with code=5003 doesn't
+        # fall through to the unsupported-status branch below.
+        dispatch_wallet_error(body)
         if status_code == 401:
             raise AuthError("Invalid or expired API key.", status_code=401)
         if status_code == 403:

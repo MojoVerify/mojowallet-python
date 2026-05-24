@@ -208,6 +208,105 @@ class TestWalletSessions:
         assert len([c for c in captured if c["method"] == "POST"]) == 2
 
 
+class TestWalletSpend:
+    def _w(self, client):
+        return Wallet(_wallet_data(), client)
+
+    def test_spend_happy_path(self, client, captured):
+        _respond(client, {"transactions": [{"id": 100}, {"id": 101}]})
+        result = self._w(client).spend(750, "SC", reference_id="game-bet-001", merchant="Casino")
+        p = captured[-1]["payload"]
+        assert p["action"] == "spend", "payload should dispatch the spend action"
+        assert p["root_code"] == "SC", "root_code passthrough"
+        assert p["reference_id"] == "game-bet-001", "reference_id passthrough"
+        assert p["merchant"] == "Casino", "merchant passthrough"
+        assert len(result.transactions) == 2, "spend returns the transactions envelope"
+
+    def test_spend_rejects_empty_reference(self, client):
+        from mojowallet.exceptions import InvalidReferenceError
+        with pytest.raises(InvalidReferenceError):
+            self._w(client).spend(100, "SC", reference_id="")
+
+    def test_spend_rejects_hash_in_reference(self, client):
+        from mojowallet.exceptions import InvalidReferenceError
+        with pytest.raises(InvalidReferenceError):
+            self._w(client).spend(100, "SC", reference_id="bet#1")
+
+    def test_spend_metadata_passthrough(self, client, captured):
+        _respond(client, {"transactions": [{"id": 1}]})
+        self._w(client).spend(100, "SC", reference_id="ref-1",
+                              metadata={"game_id": "slot-7", "player_tier": "gold"})
+        p = captured[-1]["payload"]
+        assert p["metadata"] == {"game_id": "slot-7", "player_tier": "gold"}, \
+            "metadata dict passthrough"
+
+
+class TestWalletNewQueries:
+    def _w(self, client):
+        return Wallet(_wallet_data(), client)
+
+    def test_get_holdings_no_filters(self, client, captured):
+        _respond(client, {"holdings": [{"id": 1}, {"id": 2}]})
+        result = self._w(client).get_holdings()
+        assert captured[-1]["payload"] == {"q": "holdings"}, \
+            "no filters means just q=holdings"
+        assert len(result) == 2, "should unwrap the holdings list"
+
+    def test_get_holdings_with_filters(self, client, captured):
+        _respond(client, {"holdings": [{"id": 1}]})
+        self._w(client).get_holdings(currency_code="SC_REAL", root_code="SC", include_expired=True)
+        p = captured[-1]["payload"]
+        assert p["q"] == "holdings", "q=holdings is the dispatch key"
+        assert p["currency_code"] == "SC_REAL", "currency_code passthrough"
+        assert p["root_code"] == "SC", "root_code passthrough"
+        assert p["include_expired"] is True, "include_expired passthrough"
+
+    def test_get_holdings_skips_none_and_false_filters(self, client, captured):
+        """None filters and a default False include_expired should not be sent."""
+        _respond(client, {"holdings": []})
+        self._w(client).get_holdings(currency_code=None, root_code=None, include_expired=False)
+        p = captured[-1]["payload"]
+        assert "currency_code" not in p, "None currency_code should be omitted"
+        assert "root_code" not in p, "None root_code should be omitted"
+        assert "include_expired" not in p, "default False include_expired should be omitted"
+
+    def test_get_root_balance(self, client, captured):
+        _respond(client, {"root_balance": {"available": 200000, "total": 215000, "by_code": {}}})
+        result = self._w(client).get_root_balance("SC")
+        assert captured[-1]["payload"] == {"q": "root_balance", "root_code": "SC"}, \
+            "payload should include q and root_code only"
+        assert result.available == 200000, "root_balance dict returned"
+        assert result.total == 215000, "total exposed on returned dict"
+
+
+class TestBalanceSummaryShape:
+    def _w(self, client):
+        return Wallet(_wallet_data(), client)
+
+    def test_new_root_keyed_shape_deserializes(self, client):
+        _respond(client, {
+            "wallet_uuid": "wlt-abc",
+            "balances": {
+                "SC": {"available": 200000, "total": 215000, "by_code": {
+                    "SC_REAL":  {"quantity": 150000, "formatted": "$1500.00"},
+                    "SC_BONUS": {"quantity":  50000, "formatted":  "$500.00"},
+                }},
+            },
+            "total_by_currency": {
+                "SC_REAL": {"quantity": 150000, "formatted": "$1500.00"},
+            },
+            "cashable_by_currency": {"SC_REAL": 100000},
+            "is_active": True, "is_locked": False, "is_suspended": False,
+            "suspended_until": None,
+        })
+        s = self._w(client).balance_summary()
+        assert s.balances.SC.available == 200000, "balances is root-keyed"
+        assert s.balances.SC.by_code.SC_REAL.quantity == 150000, \
+            "by_code is currency-keyed within a family"
+        assert s.total_by_currency.SC_REAL.quantity == 150000, \
+            "per-currency rollup preserved under total_by_currency"
+
+
 class TestWalletIsolation:
     """Critical: two Clients with different keys must not share state."""
 

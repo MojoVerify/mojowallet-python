@@ -7,13 +7,18 @@ import mojowallet
 from mojowallet._client import Client, _wrap
 from mojowallet.exceptions import (
     AuthError,
+    IdempotentReplayError,
+    InsufficientBalanceError,
+    InvalidReferenceError,
     MojoWalletError,
     NotFoundError,
     PermissionError,
     RateLimitError,
-    InsufficientBalanceError,
     SessionConflictError,
+    WalletInactiveError,
+    WalletInvariantError,
     WalletLockedError,
+    WalletSuspendedError,
 )
 
 
@@ -214,6 +219,104 @@ class TestErrorMapping:
         c = self._client_with(500, {"error": "Server error"})
         with pytest.raises(MojoWalletError):
             c.get("x")
+
+
+# ---------------------------------------------------------------------------
+# Wallet error-code dispatcher (5000-block)
+# ---------------------------------------------------------------------------
+class TestWalletErrorDispatch:
+    """Body-carried ``code`` is the source of truth — the dispatcher must
+    raise the matching subclass regardless of HTTP status."""
+
+    @pytest.mark.parametrize("code,status,exc_cls", [
+        (5001, 500, WalletInvariantError),
+        (5002, 402, InsufficientBalanceError),
+        (5003, 423, WalletLockedError),
+        (5004, 423, WalletSuspendedError),
+        (5005, 423, WalletInactiveError),
+        (5006, 400, InvalidReferenceError),
+        (5007, 409, IdempotentReplayError),
+    ])
+    def test_code_dispatch(self, code, status, exc_cls):
+        c = Client(api_key="k", fake_mode=True)
+        c.register_fake_responder(
+            lambda *a: True,
+            {"status_code": status, "body": {"status": False, "error": "boom", "code": code}},
+        )
+        with pytest.raises(exc_cls) as ei:
+            c.post("wallet/action/1")
+        assert ei.value.code == code, f"expected code {code}, got {ei.value.code}"
+        assert ei.value.status_code == status, \
+            f"expected status_code {status}, got {ei.value.status_code}"
+
+    def test_5002_extras_populated(self):
+        """available / required come from body fields when the server adds them."""
+        c = Client(api_key="k", fake_mode=True)
+        c.register_fake_responder(
+            lambda *a: True,
+            {"status_code": 402, "body": {
+                "status": False, "error": "Insufficient", "code": 5002,
+                "available": 100, "required": 500,
+            }},
+        )
+        with pytest.raises(InsufficientBalanceError) as ei:
+            c.post("wallet/action/1")
+        assert ei.value.available == 100, "available should be populated from body"
+        assert ei.value.required == 500, "required should be populated from body"
+
+    def test_5004_suspended_until_populated(self):
+        c = Client(api_key="k", fake_mode=True)
+        c.register_fake_responder(
+            lambda *a: True,
+            {"status_code": 423, "body": {
+                "status": False, "error": "Suspended", "code": 5004,
+                "suspended_until": "2026-06-01T00:00:00Z",
+            }},
+        )
+        with pytest.raises(WalletSuspendedError) as ei:
+            c.post("wallet/action/1")
+        assert ei.value.suspended_until == "2026-06-01T00:00:00Z", \
+            "suspended_until should be populated from body"
+
+    def test_5001_message_is_canned(self):
+        """WalletInvariantError must never echo the server's error text."""
+        c = Client(api_key="k", fake_mode=True)
+        c.register_fake_responder(
+            lambda *a: True,
+            {"status_code": 500, "body": {
+                "status": False, "error": "internal diff: SC_REAL mismatch", "code": 5001,
+            }},
+        )
+        with pytest.raises(WalletInvariantError) as ei:
+            c.post("wallet/action/1")
+        assert "diff" not in ei.value.message, \
+            "server detail must be suppressed for invariant errors"
+        assert "retry" in ei.value.message.lower(), \
+            "canned retry message expected"
+
+    def test_envelope_error_dispatches_before_generic(self):
+        """A 200 with status=false + code=5002 raises InsufficientBalanceError,
+        not the generic MojoWalletError fallback."""
+        c = Client(api_key="k", fake_mode=True)
+        c.register_fake_responder(
+            lambda *a: True,
+            {"status_code": 200, "body": {"status": False, "error": "no funds", "code": 5002}},
+        )
+        with pytest.raises(InsufficientBalanceError):
+            c.post("wallet/action/1")
+
+    def test_unknown_code_falls_through(self):
+        """A code outside the 5000-block registry falls through to generic dispatch."""
+        c = Client(api_key="k", fake_mode=True)
+        c.register_fake_responder(
+            lambda *a: True,
+            {"status_code": 200, "body": {"status": False, "error": "weird", "code": 9999}},
+        )
+        with pytest.raises(MojoWalletError) as ei:
+            c.post("wallet/action/1")
+        assert type(ei.value) is MojoWalletError, \
+            "unknown code should produce a plain MojoWalletError, not a subclass"
+        assert ei.value.code == 9999, "unknown code is preserved on the generic error"
 
 
 # ---------------------------------------------------------------------------

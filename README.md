@@ -58,6 +58,37 @@ wallet.lock(reason="Chargeback")
 wallet.unlock(reason="Investigation cleared")
 ```
 
+### Spending across a currency family
+
+```python
+# Walk the SC family in priority order and debit across holdings as needed.
+wallet.spend(750, root_code="SC", reference_id="game-bet-001", merchant="Casino")
+```
+
+### Balance reads
+
+`balance_summary()` returns balances grouped by **root currency family**
+(`root_code`), with per-currency totals exposed separately:
+
+```python
+s = wallet.balance_summary()
+s.balances.SC.available          # 200000
+s.balances.SC.by_code.SC_REAL    # {quantity: 150000, formatted: "$1500.00"}
+s.total_by_currency.SC_REAL      # per-currency rollup, unchanged from 2.2.x
+```
+
+For per-holding detail or a single family lookup:
+
+```python
+holdings   = wallet.get_holdings(root_code="SC")
+sc_balance = wallet.get_root_balance("SC")
+```
+
+**⚠ Breaking change in 2.3.0**: `balance_summary().balances` is now keyed by
+`root_code` (was `currency_code`). Callers reading `s.balances["SC_REAL"]`
+must switch to `s.total_by_currency["SC_REAL"]` or
+`s.balances["SC"].by_code["SC_REAL"]`.
+
 ## Error Handling
 
 ```python
@@ -70,6 +101,27 @@ except InsufficientBalanceError as e:
 except SessionConflictError:
     print("Another session is already active")
 ```
+
+### Error codes
+
+Wallet errors carry a numeric `code` (5000-block) and an HTTP status from
+the table below. The SDK raises a matching subclass whenever the response
+body includes a `code` in this range — the dispatch is authoritative
+regardless of HTTP status.
+
+| Code | HTTP | Class |
+|------|------|-------|
+| 5001 | 500 | `WalletInvariantError` |
+| 5002 | 402 | `InsufficientBalanceError` |
+| 5003 | 423 | `WalletLockedError` |
+| 5004 | 423 | `WalletSuspendedError` |
+| 5005 | 423 | `WalletInactiveError` |
+| 5006 | 400 | `InvalidReferenceError` |
+| 5007 | 409 | `IdempotentReplayError` |
+
+`WalletInvariantError` deliberately surfaces only a generic "please retry"
+message — never the server's diff text — so safety-critical balance-check
+failures don't leak internal state.
 
 ## Documentation
 

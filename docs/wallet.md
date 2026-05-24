@@ -102,6 +102,28 @@ Cash out funds to external destination.
 | `currency_code` | `str` | Yes | Currency code |
 | `reference_id` | `str` | Yes | External reference |
 
+### `wallet.spend(amount_units, root_code, reference_id, *, merchant="", metadata=None)`
+
+Spend funds from a currency family (e.g. `"SC"`). The server walks the
+family's holdings in priority order (currency `spend_priority` ascending,
+then holding `created` ascending) and debits across as many holdings as
+needed. Idempotent on `reference_id`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `amount_units` | `int` | Yes | Amount in smallest units |
+| `root_code` | `str` | Yes | Currency family (e.g. `"SC"`, `"GC"`) |
+| `reference_id` | `str` | Yes | External reference — must be non-empty and must not contain `'#'` |
+| `merchant` | `str` | No | Merchant name |
+| `metadata` | `dict` | No | Arbitrary metadata |
+
+Raises `InvalidReferenceError` (code 5006) **locally** if `reference_id` is
+empty or contains `'#'`, before any round-trip.
+
+```python
+wallet.spend(750, root_code="SC", reference_id="game-bet-001", merchant="Casino")
+```
+
 ### `wallet.transfer(to_wallet_id, amount_units, currency_code, **kwargs)`
 
 Transfer funds to another wallet.
@@ -154,7 +176,48 @@ balance = wallet.balance("SC_REAL")  # e.g. 5000
 
 ### `wallet.balance_summary()`
 
-Get balances across all currencies.
+Full balance snapshot across all currency families. Returns:
+
+```python
+{
+  "balances": {                  # KEYED BY ROOT_CODE
+    "SC": {"available": ..., "total": ..., "by_code": {
+      "SC_REAL":  {"quantity": ..., "formatted": ...},
+      "SC_BONUS": {"quantity": ..., "formatted": ...},
+    }},
+    "GC": {...},
+  },
+  "total_by_currency": {         # keyed by currency_code
+    "SC_REAL": {"quantity": ..., "formatted": ...},
+    ...
+  },
+  "cashable_by_currency": {"SC_REAL": ..., ...},
+  "is_active": bool, "is_locked": bool,
+  "is_suspended": bool, "suspended_until": iso8601 | None,
+}
+```
+
+> **Breaking change in 2.3.0**: `balances` is keyed by `root_code` (was
+> `currency_code`). Per-currency rollups remain available under
+> `total_by_currency` (preserved from 2.2.x).
+
+### `wallet.get_holdings(currency_code=None, root_code=None, include_expired=False)`
+
+Per-holding balance list. Filter by `currency_code` or `root_code`; both
+optional. Returns the holdings list.
+
+```python
+holdings = wallet.get_holdings(root_code="SC")
+```
+
+### `wallet.get_root_balance(root_code)`
+
+Aggregated balance for a currency family. Returns a dict with `available`,
+`total`, and `by_code` (per-currency breakdown within the family).
+
+```python
+sc = wallet.get_root_balance("SC")  # {available, total, by_code}
+```
 
 ### `wallet.cashable(currency_code)`
 

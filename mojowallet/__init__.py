@@ -29,15 +29,20 @@ from .customer import Customer, CustomerNamespace
 from .exceptions import (
     MojoWalletError,
     AuthError,
+    IdempotentReplayError,
     InsufficientBalanceError,
+    InvalidReferenceError,
     SessionConflictError,
+    WalletInactiveError,
+    WalletInvariantError,
     WalletLockedError,
+    WalletSuspendedError,
     RateLimitError,
     NotFoundError,
     PermissionError,
 )
 
-__version__ = "2.2.1"
+__version__ = "2.3.0"
 __all__ = [
     "Client",
     "Wallet",
@@ -47,9 +52,14 @@ __all__ = [
     "CustomerNamespace",
     "MojoWalletError",
     "AuthError",
+    "IdempotentReplayError",
     "InsufficientBalanceError",
+    "InvalidReferenceError",
     "SessionConflictError",
+    "WalletInactiveError",
+    "WalletInvariantError",
     "WalletLockedError",
+    "WalletSuspendedError",
     "RateLimitError",
     "NotFoundError",
     "PermissionError",
